@@ -3,35 +3,31 @@ const NodeID3 = require("node-id3");
 const path = require("path");
 const fs = require("fs");
 const glob = require("glob");
-const readline = require("readline");
 
 function safeFilename(name) {
-    // replace reserved characters
-    let safe = name.replace(/[\/\\:\*\?"<>\|]/g, "_");
+  // reserved character
+  let safe = name.replace(/[\/\\:\*\?"<>\|]/g, "_");
 
-    // trim trailing dots and spaces
-    safe = safe.replace(/[. ]+$/, "");
+  safe = safe.replace(/[. ]+$/, "");
 
-    // prevent reserved device names on Windows
-    const reserved = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
-    if (reserved.test(safe)) {
-        safe = `_${safe}`;
-    }
+  // windows reserved names
+  const reserved = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
+  if (reserved.test(safe)) {
+    safe = `_${safe}`;
+  }
 
-    return safe;
+  return safe;
 }
 
 
 function downloadTrack(videoUrl, tempDir = "./temp") {
-    if (!fs.existsSync(tempDir)) {
-        fs.mkdirSync(tempDir, { recursive: true });
-    }
+  if (!fs.existsSync(tempDir)) {
+    fs.mkdirSync(tempDir, { recursive: true });
+  }
 
-    const outputTemplate = path.join(tempDir, "song");
+  const outputTemplate = path.join(tempDir, "song");
 
-
-    // yt-dlp command
-    const cmd = `
+  const cmd = `
     yt-dlp \
     -f bestaudio \
     --no-post-overwrites \
@@ -42,280 +38,277 @@ function downloadTrack(videoUrl, tempDir = "./temp") {
     "${videoUrl}"
     `;
 
-    try {
-        console.log("Running yt-dlp...");
-        execSync(cmd, { stdio: "inherit" });
-        console.log("Download finished.");
+  try {
+    console.log("Running yt-dlp...");
+    execSync(cmd, { stdio: "inherit" });
+    console.log("Download finished.");
 
-        const matches = glob.sync(path.join(tempDir, "song.*"));
-        const inputFile = matches.find(f => !f.endsWith(".jpg") && !f.endsWith(".webp") && !f.endsWith(".json"));
-        if (!inputFile) throw new Error("No audio file found from yt-dlp");
+    const matches = glob.sync(path.join(tempDir, "song.*"));
+    const inputFile = matches.find(f => !f.endsWith(".jpg") && !f.endsWith(".webp") && !f.endsWith(".json"));
+    if (!inputFile) throw new Error("No audio file found from yt-dlp");
 
-        // convert to mp3
-        const outputFile = path.join(tempDir, "song.mp3");
-        const ffmpegCmd = `
+    const outputFile = path.join(tempDir, "song.mp3");
+    const ffmpegCmd = `
         ffmpeg -y -i "${inputFile}" -codec:a libmp3lame -b:a 256k -q:a 0 "${outputFile}"
         `;
-        console.log("Running ffmpeg...");
-        execSync(ffmpegCmd, { stdio: "inherit" });
-        console.log("ffmpeg finished, MP3 ready.");
-    } catch (err) {
-        console.error("Download/conversion failed:", err);
-        return;
-    }
+    console.log("Running ffmpeg...");
+    execSync(ffmpegCmd, { stdio: "inherit" });
+    console.log("ffmpeg finished, MP3 ready.");
+  } catch (err) {
+    console.error("Download/conversion failed:", err);
+    return;
+  }
 
-    // crop thumbnail to square using ImageMagick
-    const thumbFile = fs.readdirSync(tempDir).find(f =>
+  const thumbFile = fs.readdirSync(tempDir).find(f =>
     f.match(/\.(jpe?g|png|webp)$/i)
-    );
-    if (thumbFile) {
-        const thumbPath = path.join(tempDir, thumbFile);
-        const croppedPath = path.join(tempDir, "cover.png");
+  );
+  if (thumbFile) {
+    const thumbPath = path.join(tempDir, thumbFile);
+    const croppedPath = path.join(tempDir, "cover.png");
 
-        // use ImageMagick 'convert' to crop to a centered square
-        const cropCmd = `magick "${thumbPath}" -thumbnail 720x720^ -gravity center -extent 720x720 -quality 90 "${croppedPath}"`
-        execSync(cropCmd, { stdio: "inherit" });
+    // crop to 720x720 square
+    const cropCmd = `magick "${thumbPath}" -thumbnail 720x720^ -gravity center -extent 720x720 -quality 90 "${croppedPath}"`
+    execSync(cropCmd, { stdio: "inherit" });
+  }
+
+  const infoPath = path.join(tempDir, "song.info.json");
+  let description = null;
+
+  if (fs.existsSync(infoPath)) {
+    try {
+      const infoData = JSON.parse(fs.readFileSync(infoPath, "utf8"));
+      if (infoData.description) {
+        description = infoData.description;
+      }
+    } catch (err) {
+      console.error("Failed to read info.json:", err);
+      return;
     }
+  }
 
-    const infoPath = path.join(tempDir, "song.info.json");
-    let description = null;
+  console.log(description);
 
-    if (fs.existsSync(infoPath)) {
-        try {
-            const infoData = JSON.parse(fs.readFileSync(infoPath, "utf8"));
-            if (infoData.description) {
-                description = infoData.description;
-            }
-        } catch (err) {
-            console.error("Failed to read info.json:", err);
-            return;
-        }
-    }
+  metadata = parseMetadataFromDescription(description);
 
-    console.log(description);
+  console.log(metadata);
 
-    metadata = parseMetadataFromDescription(description);
+  if (!metadata.isAutoGenerated) {
+    const manualMetaPath = path.join(tempDir, "songmetadata.json");
+    const fd = fs.openSync('/dev/stdin', 'rs');
 
-    console.log(metadata);
-
-    if (!metadata.isAutoGenerated) {
-        const manualMetaPath = path.join(tempDir, "songmetadata.json");
-        const fd = fs.openSync('/dev/stdin', 'rs'); // open stdin in blocking mode
-
-        // seed defaults from yt-dlp's info.json if available
-        let seed = {
-            title: "EDIT THIS",
-            artists: ["EDIT THIS"],
-            album: "EDIT THIS",
-            date: "EDIT THIS",   // renamed from year
-            description: "Optional, but you can put notes here",
-            extraRoles: {}
-        };
-
-        try {
-            if (fs.existsSync(infoPath)) {
-                const info = JSON.parse(fs.readFileSync(infoPath, "utf8"));
-                if (info.title) seed.title = info.title;
-                if (info.uploader) seed.artists = [info.uploader];
-                if (info.upload_date && /^\d{8}$/.test(info.upload_date)) {
-                    // convert YYYYMMDD → YYYY-MM-DD
-                    seed.date = `${info.upload_date.slice(0,4)}-${info.upload_date.slice(4,6)}-${info.upload_date.slice(6,8)}`;
-                }
-                // if (info.description) seed.description = info.description;
-            }
-        } catch (err) {
-            console.warn("Could not parse yt-dlp info.json for defaults:", err);
-        }
-
-        // write template only if it doesn't already exist
-        if (!fs.existsSync(manualMetaPath)) {
-            fs.writeFileSync(manualMetaPath, JSON.stringify(seed, null, 2), "utf8");
-        }
-
-        console.log("\nYoutube video is not an art track.");
-        console.log("Please populate the fields in temp/songmetadata.json before proceeding.");
-        console.log("(You can also edit the album cover while this program waits)");
-        while (true) {
-            console.log("Hit [Enter] to continue\n");
-
-            // block until Enter
-            const buf = Buffer.alloc(1);
-            while (true) {
-                fs.readSync(fd, buf, 0, 1, null);
-                if (buf[0] === 10) break; // newline
-            }
-
-            try {
-                const manualData = JSON.parse(fs.readFileSync(manualMetaPath, "utf8"));
-
-                const bad =
-                !manualData.title || manualData.title === "EDIT THIS" ||
-                !Array.isArray(manualData.artists) || manualData.artists.length === 0 || manualData.artists[0] === "EDIT THIS" ||
-                !manualData.album || manualData.album === "EDIT THIS" ||
-                !manualData.date || manualData.date === "EDIT THIS";
-
-                if (!bad) {
-                    metadata = manualData;
-                    break; // success
-                }
-
-                console.error("Metadata validation failed. Please edit temp/songmetadata.json and try again.");
-            } catch (err) {
-                console.error("Failed to read manual metadata file:", err);
-            }
-        }
-
-    }
-
-    const mp3Path = path.join(tempDir, "song.mp3");
-    const coverPath = path.join(tempDir, "cover.png");
-
-    const tags = {
-        title: metadata.title || "",
-        artist: (metadata.artists || []).join(", "),
-        album: metadata.album || metadata.title, // singles fallback
-        // date: metadata.date || "", seems to be throwing easytag off
-        composer: metadata.composer || "",
-        lyricist: metadata.lyricist || "",
-        year: metadata.date ? metadata.date.slice(0, 4) : "", // just the year
-        // embed cover art if it exists
-        image: fs.existsSync(coverPath) ? {
-            mime: "image/png",
-            type: { id: 3, name: "front cover" },
-            description: "Cover",
-            imageBuffer: fs.readFileSync(coverPath)
-        } : undefined
+    // seed defaults from yt-dlp's info.json if available
+    let seed = {
+      title: "EDIT THIS",
+      artists: ["EDIT THIS"],
+      album: "EDIT THIS",
+      date: "EDIT THIS",   // renamed from year
+      description: "",
+      extraRoles: {}
     };
 
-    // flatten extra roles into TXXX frames
-    if (metadata.extraRoles) {
-        for (const [role, name] of Object.entries(metadata.extraRoles)) {
-            tags[`TXXX:${role}`] = name;
-        }
-    }
-
     try {
-        NodeID3.update(tags, mp3Path);
-        console.log("Metadata written to MP3.");
+      if (fs.existsSync(infoPath)) {
+        const info = JSON.parse(fs.readFileSync(infoPath, "utf8"));
+        if (info.title) seed.title = info.title;
+        if (info.uploader) seed.artists = [info.uploader];
+        if (info.upload_date && /^\d{8}$/.test(info.upload_date)) {
+          // convert YYYYMMDD → YYYY-MM-DD
+          seed.date = `${info.upload_date.slice(0, 4)}-${info.upload_date.slice(4, 6)}-${info.upload_date.slice(6, 8)}`;
+        }
+        // if (info.description) seed.description = info.description;
+      }
     } catch (err) {
-        console.error("Failed to write tags:", err);
+      console.warn("Could not parse yt-dlp info.json for defaults:", err);
     }
 
-    // build final filename
-    const safeTitle = safeFilename(metadata.title)
-    const firstArtist = metadata.artists && metadata.artists.length > 0
+    // write template only if it doesn't already exist
+    if (!fs.existsSync(manualMetaPath)) {
+      fs.writeFileSync(manualMetaPath, JSON.stringify(seed, null, 2), "utf8");
+    }
+
+    console.log("\nYoutube video is not an art track.");
+    console.log("Please populate the fields in temp/songmetadata.json before proceeding.");
+    console.log("(You can also edit the album cover while this program waits)");
+    while (true) {
+      console.log("Hit [Enter] to continue\n");
+
+      // block until Enter
+      // there has to be a better way
+      const buf = Buffer.alloc(1);
+      while (true) {
+        fs.readSync(fd, buf, 0, 1, null);
+        if (buf[0] === 10) break; // newline
+      }
+
+      try {
+        const manualData = JSON.parse(fs.readFileSync(manualMetaPath, "utf8"));
+
+        const bad =
+          !manualData.title || manualData.title === "EDIT THIS" ||
+          !Array.isArray(manualData.artists) || manualData.artists.length === 0 || manualData.artists[0] === "EDIT THIS" ||
+          !manualData.album || manualData.album === "EDIT THIS" ||
+          !manualData.date || manualData.date === "EDIT THIS";
+
+        if (!bad) {
+          metadata = manualData;
+          break; // success
+        }
+
+        console.error("Metadata validation failed. Please edit temp/songmetadata.json and try again.");
+      } catch (err) {
+        console.error("Failed to read manual metadata file:", err);
+      }
+    }
+
+  }
+
+  const mp3Path = path.join(tempDir, "song.mp3");
+  const coverPath = path.join(tempDir, "cover.png");
+
+  const tags = {
+    title: metadata.title || "",
+    artist: (metadata.artists || []).join(", "),
+    album: metadata.album || metadata.title, // singles fallback
+    // date: metadata.date || "", seems to be throwing easytag off
+    composer: metadata.composer || "",
+    lyricist: metadata.lyricist || "",
+    year: metadata.date ? metadata.date.slice(0, 4) : "", // just the year
+    image: fs.existsSync(coverPath) ? {
+      mime: "image/png",
+      type: { id: 3, name: "front cover" },
+      description: "Cover",
+      imageBuffer: fs.readFileSync(coverPath)
+    } : undefined
+  };
+
+  // flatten extra roles into TXXX frames
+  if (metadata.extraRoles) {
+    for (const [role, name] of Object.entries(metadata.extraRoles)) {
+      tags[`TXXX:${role}`] = name;
+    }
+  }
+
+  try {
+    NodeID3.update(tags, mp3Path);
+    console.log("Metadata written to MP3.");
+  } catch (err) {
+    console.error("Failed to write tags:", err);
+  }
+
+  const safeTitle = safeFilename(metadata.title)
+  const firstArtist = metadata.artists && metadata.artists.length > 0
     ? metadata.artists[0]
     : "Unknown";
 
-    const safeArtist = safeFilename(firstArtist);
+  const safeArtist = safeFilename(firstArtist);
 
-    const finalName = `${safeArtist} - ${safeTitle}.mp3`;
-    const finalPath = finalName;
+  // "wildcard" goes here.
+  const finalName = `${safeArtist} - ${safeTitle}.mp3`;
 
-    // copy file
-    fs.copyFileSync(mp3Path, finalPath);
-    console.log(`Saved to ${finalPath}`);
+  // TODO: Join path with optional destination folder
+  const finalPath = finalName;
 
-    // cleanup temp folder
-    fs.rmSync(tempDir, { recursive: true, force: true });
-    console.log("Temp folder deleted.");
+  fs.copyFileSync(mp3Path, finalPath);
+  console.log(`Saved to ${finalPath}`);
+
+  fs.rmSync(tempDir, { recursive: true, force: true });
+  console.log("Temp folder deleted.");
 }
 
 function parseMetadataFromDescription(desc) {
-    const lines = desc.split("\n").map(l => l.trim()).filter(Boolean);
+  const lines = desc.split("\n").map(l => l.trim()).filter(Boolean);
 
-    const result = {
-        title: null,          // TIT2
-        artists: [],          // TPE1
-        album: null,          // TALB
-        composer: [],         // TCOM
-        lyricist: [],         // TEXT
-        date: null,           // TDRC
-        copyright: null,      // TCOP
-        publisher: null,      // TPUB
-        extraRoles: {},       // TXXX for additional credits
-        isAutoGenerated: false
-    };
+  const result = {
+    title: null,          // TIT2
+    artists: [],          // TPE1
+    album: null,          // TALB
+    composer: [],         // TCOM
+    lyricist: [],         // TEXT
+    date: null,           // TDRC
+    copyright: null,      // TCOP
+    publisher: null,      // TPUB
+    extraRoles: {},       // TXXX for additional credits
+    isAutoGenerated: false
+  };
 
-    // auto-generated flag
-    result.isAutoGenerated = /Auto-generated by YouTube\./i.test(desc);
+  result.isAutoGenerated = /Auto-generated by YouTube\./i.test(desc);
 
-    // provider → publisher
-    const providerLine = lines.find(l => /^Provided to YouTube by/i.test(l));
-    if (providerLine) {
-        result.publisher = providerLine.replace(/^Provided to YouTube by/i, "").trim();
+  // video is not an art track, return almost empty result
+  if (!result.isAutoGenerated) {
+    return result;
+  }
+
+  const providerLine = lines.find(l => /^Provided to YouTube by/i.test(l));
+  if (providerLine) {
+    result.publisher = providerLine.replace(/^Provided to YouTube by/i, "").trim();
+  }
+
+  const copyrightLine = lines.find(l => /^℗/.test(l));
+  if (copyrightLine) {
+    result.copyright = copyrightLine;
+  }
+
+  const releaseLine = lines.find(l => /^Released on:/i.test(l));
+  if (releaseLine) {
+    result.date = releaseLine.replace(/^Released on:/i, "").trim();
+  }
+
+  // extraRoles bit is fucked.
+  lines.forEach(l => {
+    const match = /^([^:]+):\s*(.+)$/.exec(l);
+    if (match) {
+      const role = match[1].trim();
+      const name = match[2].trim();
+      if (/^composer$/i.test(role)) result.composer.push(name);
+      else if (/^lyricist$/i.test(role)) result.lyricist.push(name);
+      else result.extraRoles[role] = name;
     }
+  });
 
-    // copyright
-    const copyrightLine = lines.find(l => /^℗/.test(l));
-    if (copyrightLine) {
-        result.copyright = copyrightLine;
-    }
+  const titleArtistIndex = lines.findIndex((l, idx) => idx > 0 && l.includes("·"));
+  if (titleArtistIndex !== -1) {
+    const titleArtistLine = lines[titleArtistIndex];
+    const parts = titleArtistLine.split("·").map(p => p.trim());
+    result.title = parts[0];
 
-    // release date
-    const releaseLine = lines.find(l => /^Released on:/i.test(l));
-    if (releaseLine) {
-        result.date = releaseLine.replace(/^Released on:/i, "").trim();
-    }
-
-    // roles (Composer, Lyricist, Arranger, etc.)
-    lines.forEach(l => {
-        const match = /^([^:]+):\s*(.+)$/.exec(l);
-        if (match) {
-            const role = match[1].trim();
-            const name = match[2].trim();
-            if (/^composer$/i.test(role)) result.composer.push(name);
-            else if (/^lyricist$/i.test(role)) result.lyricist.push(name);
-            else result.extraRoles[role] = name;
-        }
+    const rawArtists = parts.slice(1);
+    rawArtists.forEach(part => {
+      part
+        .split(/feat\.|featuring|&|,/i)
+        .map(a => a.trim())
+        .filter(Boolean)
+        .forEach(a => result.artists.push(a));
     });
 
-    // title + artists
-    const titleArtistIndex = lines.findIndex((l, idx) => idx > 0 && l.includes("·"));
-    if (titleArtistIndex !== -1) {
-        const titleArtistLine = lines[titleArtistIndex];
-        const parts = titleArtistLine.split("·").map(p => p.trim());
-        result.title = parts[0];
-
-        const rawArtists = parts.slice(1);
-        rawArtists.forEach(part => {
-            part
-            .split(/feat\.|featuring|&|,/i)
-            .map(a => a.trim())
-            .filter(Boolean)
-            .forEach(a => result.artists.push(a));
-        });
-
-        // album = next line if it’s not copyright or release info
-        if (lines[titleArtistIndex + 1] && !/^℗|^Released on:/i.test(lines[titleArtistIndex + 1])) {
-            result.album = lines[titleArtistIndex + 1];
-        }
+    // album = next line if it’s not copyright or release info
+    if (lines[titleArtistIndex + 1] && !/^℗|^Released on:/i.test(lines[titleArtistIndex + 1])) {
+      result.album = lines[titleArtistIndex + 1];
     }
+  }
 
-    // fallback title if no "·" line
-    if (!result.title && lines.length > 1) {
-        result.title = lines[1];
-    }
+  // fallback title if no "·" line
+  if (!result.title && lines.length > 1) {
+    result.title = lines[1];
+  }
 
-    // deduplicate arrays
-    result.artists = result.artists.filter((a, i, arr) => arr.indexOf(a) === i);
-    result.composer = result.composer.filter((a, i, arr) => arr.indexOf(a) === i);
-    result.lyricist = result.lyricist.filter((a, i, arr) => arr.indexOf(a) === i);
+  // deduplicate arrays
+  result.artists = result.artists.filter((a, i, arr) => arr.indexOf(a) === i);
+  result.composer = result.composer.filter((a, i, arr) => arr.indexOf(a) === i);
+  result.lyricist = result.lyricist.filter((a, i, arr) => arr.indexOf(a) === i);
 
-    return result;
+  return result;
 }
 
 if (process.argv.length < 3) {
-    console.error("Usage: node script.js <youtube_url>");
-    process.exit(1);
+  console.error("Usage: node script.js <youtube_url>");
+  process.exit(1);
 }
 
 const videoUrl = process.argv[2];
 
-// quick guard against playlists
 if (videoUrl.includes("list=")) {
-    console.error("Playlist detected. Playlist handling is not implemented yet.");
-    process.exit(1);
+  console.error("Playlist detected. Playlist handling is not implemented yet.");
+  process.exit(1);
 }
 
 downloadTrack(videoUrl);
