@@ -8,7 +8,7 @@ yarn-error.log*
 pnpm-debug.log*
 
 # any random stuff i happen to download
-.mp3
+*.mp3
 
 # somehow
 temp/
