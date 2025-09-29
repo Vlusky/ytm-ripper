@@ -262,7 +262,7 @@ function parseMetadataFromDescription(desc) {
       const name = match[2].trim()
       if (/^composer$/i.test(role)) result.composer.push(name)
       else if (/^lyricist$/i.test(role)) result.lyricist.push(name)
-      else result.extraRoles[role] = name
+      else if (!/^released on$/i.test(role)) result.extraRoles[role] = name
     }
   })
 
