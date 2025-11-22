@@ -4,7 +4,9 @@ const path = require("path")
 const fs = require("fs")
 const glob = require("glob")
 
-function safeFilename(name) {
+const ytdlpCommand = `./bin/yt-dlp`
+
+function sanitizeString(name) {
   // reserved character
   let safe = name.replace(/[\/\\:\*\?"<>\|]/g, "_")
 
@@ -19,8 +21,56 @@ function safeFilename(name) {
   return safe
 }
 
+// future me, all these functions are designed to *crash* upon failing,
+// under the assumption that they're to be run as a ""shell script""
+//
+// might want to refactor, with error codes and all that, if you want to
+// convert this to a more "general purpose" app
 
-function downloadTrack(videoUrl, tempDir = "./temp") {
+function getPlaylistVideoIds(playlistUrl) {
+  const cmd = `${ytdlpCommand} --flat-playlist -J "${playlistUrl}"`;
+  const output = execSync(cmd, { encoding: "utf8" });
+  const json = JSON.parse(output);
+
+  if (!json.entries || !Array.isArray(json.entries)) {
+    throw new Error("Failed to parse playlist entries.");
+  }
+
+  return json.entries.map(entry => entry.id); // array of video IDs
+}
+
+function downloadAlbum(playlistUrl, destination) {
+  console.log("Running yt-dlp to fetch playlist links...")
+  const cmd = `${ytdlpCommand} --flat-playlist -J "${playlistUrl}"`;
+  const output = execSync(cmd, { encoding: "utf8" });
+  const json = JSON.parse(output);
+
+  if (!json.entries || !Array.isArray(json.entries)) {
+    throw new Error("Failed to parse playlist entries.");
+  }
+
+  const links = json.entries.map(entry => entry.id).map(id => `https://www.youtube.com/watch?v=${id}`)
+  console.log("Obtained links.")
+  console.log(links)
+
+  let albumName = "playlist"
+
+  // if these two aren't null, that means it's a user generated (regular) playlist
+  if (json.channel_id && json.uploader_id) {
+    console.log("Playlist link is not an auto-generated album playlist. Manual entry might be required for some songs.")
+  } else {
+    albumName = json.title.replace("Album - ", "")
+    console.log("Found " + albumName)
+  }
+
+  console.log("Downloading...")
+  links.forEach((link, idx) => {
+    downloadTrack(link, path.join(destination. sanitizeString(albumName)), idx + 1)
+  })
+}
+
+function downloadTrack(videoUrl, destination = "", trackNumber = -1) {
+  const tempDir = "./temp"
   if (!fs.existsSync(tempDir)) {
     fs.mkdirSync(tempDir, { recursive: true })
   }
@@ -28,7 +78,7 @@ function downloadTrack(videoUrl, tempDir = "./temp") {
   const outputTemplate = path.join(tempDir, "song")
 
   const cmd = `
-    yt-dlp \
+    ${ytdlpCommand} \
     -f bestaudio \
     --no-post-overwrites \
     --no-post-overwrite \
@@ -130,6 +180,7 @@ function downloadTrack(videoUrl, tempDir = "./temp") {
     console.log("Please populate the fields in temp/songmetadata.json before proceeding.")
     console.log("(You can also edit the album cover while this program waits)")
     while (true) {
+      // call "open with default" here
       console.log("Hit [Enter] to continue\n")
 
       // block until Enter
@@ -181,6 +232,10 @@ function downloadTrack(videoUrl, tempDir = "./temp") {
     } : undefined
   }
 
+  if (trackNumber > 0) {
+    tags.trackNumber = trackNumber
+  }
+
   // flatten extra roles into TXXX frames
   if (metadata.extraRoles) {
     for (const [role, name] of Object.entries(metadata.extraRoles)) {
@@ -195,19 +250,23 @@ function downloadTrack(videoUrl, tempDir = "./temp") {
     console.error("Failed to write tags:", err)
   }
 
-  const safeTitle = safeFilename(metadata.title)
+  const safeTitle = sanitizeString(metadata.title)
   const firstArtist = metadata.artists && metadata.artists.length > 0
     ? metadata.artists[0]
     : "Unknown"
 
-  const safeArtist = safeFilename(firstArtist)
+  const safeArtist = sanitizeString(firstArtist)
 
   // "wildcard" goes here.
   const finalName = `${safeArtist} - ${safeTitle}.mp3`
 
   // TODO: Join path with optional destination folder
-  const finalPath = finalName
+  const finalPath = path.join(destination, finalName)
 
+  if (!fs.existsSync(destination) && destination !== "") {
+    console.log("Creating folder " + destination)
+    fs.mkdirSync(destination, { recursive: true })
+  }
   fs.copyFileSync(mp3Path, finalPath)
   console.log(`Saved to ${finalPath}`)
 
@@ -301,15 +360,17 @@ function parseMetadataFromDescription(desc) {
 }
 
 if (process.argv.length < 3) {
-  console.error("Usage: node script.js <youtube_url>")
+  console.error("Usage: node . <youtube_url> <destination (optional)>")
   process.exit(1)
 }
+
 
 const videoUrl = process.argv[2]
+const destination = process.argv[3] || "downloads"
 
 if (videoUrl.includes("list=")) {
-  console.error("Playlist detected. Playlist handling is not implemented yet.")
-  process.exit(1)
+  downloadAlbum(videoUrl, destination)
+} else {
+  downloadTrack(videoUrl, destination)
 }
 
-downloadTrack(videoUrl)
