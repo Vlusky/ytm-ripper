@@ -65,7 +65,7 @@ function downloadAlbum(playlistUrl, destination) {
 
   console.log("Downloading...")
   links.forEach((link, idx) => {
-    downloadTrack(link, path.join(destination. sanitizeString(albumName)), idx + 1)
+    downloadTrack(link, path.join(destination, sanitizeString(albumName)), idx + 1)
   })
 }
 
