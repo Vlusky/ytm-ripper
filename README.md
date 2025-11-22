@@ -24,7 +24,7 @@ Because of how often YouTube extraction breaks, the script expects the yt-dlp bi
 
 ## Usage
 ```sh
-node . <youtube video/album link>
+node . <youtube video/album link> <destination folder (optional)>
 ```
 
 If the thing is an [art track](https://support.google.com/youtube/answer/6007071?hl=en) (auto generated music releases),
