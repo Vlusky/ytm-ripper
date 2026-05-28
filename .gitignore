@@ -14,3 +14,6 @@ pnpm-debug.log*
 temp/
 downloads/
 bin/
+
+# user defined
+aliases.json

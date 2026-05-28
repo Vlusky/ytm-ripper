@@ -6,6 +6,17 @@ const glob = require("glob")
 
 const ytdlpCommand = `./bin/yt-dlp`
 
+const aliasesPath = "./aliases.json"
+let aliases = { artists: {}, albums: {}, titles: {} }
+
+if (fs.existsSync(aliasesPath)) {
+  try {
+    aliases = JSON.parse(fs.readFileSync(aliasesPath, "utf8"))
+  } catch (err) {
+    console.error("Failed to parse aliases.json, proceeding without it:", err)
+  }
+}
+
 function sanitizeString(name) {
   // reserved character
   let safe = name.replace(/[\/\\:\*\?"<>\|]/g, "_")
@@ -319,8 +330,12 @@ function parseMetadataFromDescription(desc) {
     result.date = releaseLine.replace(/^Released on:/i, "").trim()
   }
 
+  const titleArtistIndex = lines.findIndex((l, idx) => idx > 0 && l.includes("·"))
+
   // extraRoles bit is fucked.
-  lines.forEach(l => {
+  lines.forEach((l, idx) => {
+    if (idx === titleArtistIndex) return
+
     const match = /^([^:]+):\s*(.+)$/.exec(l)
     if (match) {
       const role = match[1].trim()
@@ -331,7 +346,6 @@ function parseMetadataFromDescription(desc) {
     }
   })
 
-  const titleArtistIndex = lines.findIndex((l, idx) => idx > 0 && l.includes("·"))
   if (titleArtistIndex !== -1) {
     const titleArtistLine = lines[titleArtistIndex]
     const parts = titleArtistLine.split("·").map(p => p.trim())
@@ -361,6 +375,29 @@ function parseMetadataFromDescription(desc) {
   result.artists = result.artists.filter((a, i, arr) => arr.indexOf(a) === i)
   result.composer = result.composer.filter((a, i, arr) => arr.indexOf(a) === i)
   result.lyricist = result.lyricist.filter((a, i, arr) => arr.indexOf(a) === i)
+
+  // 1. Map artist names if aliases exist (case-insensitive)
+  if (result.artists && result.artists.length > 0) {
+    result.artists = result.artists.map(artist => {
+      const matchedAlias = Object.keys(aliases.artists || {}).find(
+        key => key.toLowerCase() === artist.toLowerCase()
+      )
+      return matchedAlias ? aliases.artists[matchedAlias] : artist
+    })
+  }
+
+  // 2. Map album name if an alias exists
+  if (result.album) {
+    const matchedAlbumAlias = Object.keys(aliases.albums || {}).find(
+      key => key.toLowerCase() === result.album.toLowerCase()
+    )
+    if (matchedAlbumAlias) {
+      result.album = aliases.albums[matchedAlbumAlias]
+    }
+  }
+
+  // deduplicate again just in case
+  result.artists = result.artists.filter((a, i, arr) => arr.indexOf(a) === i)
 
   return result
 }
