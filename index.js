@@ -25,7 +25,7 @@ function sanitizeString(name) {
 // under the assumption that they're to be run as a ""shell script""
 //
 // might want to refactor, with error codes and all that, if you want to
-// convert this to a more "general purpose" app
+// convert this to a more "general purpose" app, probably with a frontend.
 
 function getPlaylistVideoIds(playlistUrl) {
   const cmd = `${ytdlpCommand} --flat-playlist -J "${playlistUrl}"`;
@@ -110,7 +110,8 @@ function downloadTrack(videoUrl, destination = "", trackNumber = -1) {
   }
 
   const thumbFile = fs.readdirSync(tempDir).find(f =>
-    f.match(/\.(jpe?g|png|webp)$/i)
+      f.match(/\.(jpe?g|png|webp)$/i)
+  //  f.match(/\.(webp)$/i)
   )
   if (thumbFile) {
     const thumbPath = path.join(tempDir, thumbFile)
@@ -215,46 +216,51 @@ function downloadTrack(videoUrl, destination = "", trackNumber = -1) {
 
   const mp3Path = path.join(tempDir, "song.mp3")
   const coverPath = path.join(tempDir, "cover.png")
+  const firstArtist = metadata.artists && metadata.artists.length > 0
+    ? metadata.artists[0]
+    : "Unknown"
 
+  // 1. Join arrays into comma-separated strings so ID3 readers can parse them
   const tags = {
     title: metadata.title || "",
     artist: (metadata.artists || []).join(", "),
-    album: metadata.album || metadata.title, // singles fallback
-    // date: metadata.date || "", seems to be throwing easytag off
-    composer: metadata.composer || "",
-    lyricist: metadata.lyricist || "",
-    year: metadata.date ? metadata.date.slice(0, 4) : "", // just the year
+    album: metadata.album || metadata.title,
+    performerInfo: firstArtist, // album artist
+    composer: Array.isArray(metadata.composer) ? metadata.composer.join(", ") : (metadata.composer || ""),
+    lyricist: Array.isArray(metadata.lyricist) ? metadata.lyricist.join(", ") : (metadata.lyricist || ""),
+    year: metadata.date ? metadata.date.slice(0, 4) : "", 
     image: fs.existsSync(coverPath) ? {
       mime: "image/png",
       type: { id: 3, name: "front cover" },
       description: "Cover",
       imageBuffer: fs.readFileSync(coverPath)
-    } : undefined
+    } : undefined,
+    userDefinedText: [] // This maps to TXXX frames in node-id3
   }
 
   if (trackNumber > 0) {
     tags.trackNumber = trackNumber
   }
 
-  // flatten extra roles into TXXX frames
+  // 2. Properly structure TXXX frames for node-id3
   if (metadata.extraRoles) {
     for (const [role, name] of Object.entries(metadata.extraRoles)) {
-      tags[`TXXX:${role}`] = name
+      tags.userDefinedText.push({
+        description: role,
+        value: name
+      })
     }
   }
 
   try {
     NodeID3.update(tags, mp3Path)
     console.log("Metadata written to MP3.")
+    console.log(tags)
   } catch (err) {
     console.error("Failed to write tags:", err)
   }
 
   const safeTitle = sanitizeString(metadata.title)
-  const firstArtist = metadata.artists && metadata.artists.length > 0
-    ? metadata.artists[0]
-    : "Unknown"
-
   const safeArtist = sanitizeString(firstArtist)
 
   // "wildcard" goes here.
