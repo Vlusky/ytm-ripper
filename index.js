@@ -386,7 +386,7 @@ function parseMetadataFromDescription(desc) {
     })
   }
 
-  // 2. Map album name if an alias exists
+  // 2. Map album name if an alias exists (also case insensitive)
   if (result.album) {
     const matchedAlbumAlias = Object.keys(aliases.albums || {}).find(
       key => key.toLowerCase() === result.album.toLowerCase()
